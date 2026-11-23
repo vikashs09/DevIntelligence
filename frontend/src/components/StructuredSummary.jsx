@@ -1,0 +1,9 @@
+import {useState} from 'react';
+import {api} from '../services/api';
+const names={executiveSummary:'Executive Summary / TL;DR',keyTakeaways:'Key Takeaways & Decisions',actionItems:'Action Items',openQuestions:'Open Questions / Risks',reportOverview:'Report Overview',achievements:'Key Achievements / Milestones',risksAndGaps:'Identified Risks & Gaps',crossCheck:'Cross-Check Against Repo / Tasks',recommendedNextSteps:'Recommended Next Steps'};
+export default function StructuredSummary({sections,projectId='',noteId=''}){
+ const [creating,setCreating]=useState(''),[created,setCreated]=useState({}),[error,setError]=useState('');
+ if(!sections)return null;
+ async function create(item,i){try{setCreating(String(i));setError('');const r=await api.post('/ai/action-task',{...item,projectId:projectId||undefined,noteId:noteId||undefined});setCreated(c=>({...c,[i]:r.data.task.title}))}catch(e){setError(e.response?.data?.message||'Could not create task')}finally{setCreating('')}}
+ return <section className="upgrade-card upgrade-stack" aria-live="polite"><h3>Structured AI Summary</h3>{error&&<p role="alert">{error}</p>}{Object.entries(names).filter(([key])=>key in sections).map(([key,label])=><div key={key}><h4>{label}</h4>{key==='actionItems'?(sections[key]?.length?<div className="upgrade-stack">{sections[key].map((item,i)=><div className="upgrade-item" key={i}><strong>{item.title}</strong><p>{item.description}</p><div className="upgrade-actions"><span className="upgrade-chip">{item.priority}</span><button className="primary small" disabled={creating===String(i)||!!created[i]} onClick={()=>create(item,i)}>{created[i]?'Task created':creating===String(i)?'Creating…':'Create Task'}</button></div></div>)}</div>:<p className="upgrade-muted">No actionable items identified.</p>):Array.isArray(sections[key])?<ul>{sections[key].map((x,i)=><li key={i}>{x}</li>)}</ul>:<p className="upgrade-result">{sections[key]||'Not enough evidence.'}</p>}</div>)}</section>;
+}
