@@ -1,0 +1,2 @@
+import mongoose from "mongoose";
+const schema=new mongoose.Schema({team:{type:mongoose.Schema.Types.ObjectId,ref:"Team",required:true,index:true},projectId:{type:mongoose.Schema.Types.ObjectId,ref:"Project"},title:{type:String,required:true,maxlength:240},content:{type:String,required:true,maxlength:250000},format:{type:String,enum:["md","txt","json"],default:"md"},createdBy:{type:mongoose.Schema.Types.ObjectId,ref:"User"}},{timestamps:true});export default mongoose.model("Report",schema);
