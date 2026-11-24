@@ -1,0 +1,4 @@
+import mongoose from "mongoose";
+const id={type:mongoose.Schema.Types.ObjectId};
+const schema=new mongoose.Schema({team:{...id,ref:"Team",required:true,index:true},projectId:{...id,ref:"Project",index:true},folderId:{...id,ref:"NoteFolder",index:true,default:null},title:{type:String,required:true,trim:true,maxlength:240},content:{type:String,default:"",maxlength:100000},category:{type:String,enum:["architecture","meeting","bug","report-review","idea","general"],default:"general"},tags:[{type:String,maxlength:40}],isPinned:{type:Boolean,default:false},linkedTaskIds:[{...id,ref:"Task"}],linkedNoteIds:[{...id,ref:"Note"}],linkedReportIds:[{...id,ref:"Report"}],linkedFilePaths:[String],linkedGithubRefs:[String],createdBy:{...id,ref:"User"},updatedBy:{...id,ref:"User"}},{timestamps:true});
+schema.index({team:1,updatedAt:-1});export default mongoose.model("Note",schema);
