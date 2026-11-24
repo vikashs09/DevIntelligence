@@ -26,13 +26,14 @@ export default function Chat({ user }) {
   const [threadBusy,setThreadBusy]=useState(false);
   const [insightKind,setInsightKind]=useState("summary");
   const [chatSearch,setChatSearch]=useState("");
+  const [conversationSearch,setConversationSearch]=useState("");
   const [showSearch,setShowSearch]=useState(false);
   const [showEmoji,setShowEmoji]=useState(false);
   const [copied,setCopied]=useState("");
   const socketRef = useRef(null);
+  const activeRoomRef = useRef({ type: "group", channel: "general", peerId: null });
   const endRef = useRef(null);
 
-  const roomKey = mode === "group" ? `group:${channel}` : `dm:${peer?._id || peer?.id || ""}`;
   const visibleMessages = useMemo(() => messages.filter(m => String(m.text || m.content || "").toLowerCase().includes(chatSearch.toLowerCase())), [messages, chatSearch]);
   const activeTitle = mode === "group" ? `# ${channel}` : peer ? peer.name : "Direct message";
 
@@ -46,89 +47,70 @@ export default function Chat({ user }) {
     api.get("/team/members").then((r) => setMembers(r.data.members || [])).catch(() => {});
   }, []);
 
+  // Fetch the current conversation independently from Socket.IO, so switching
+  // channels does not destroy and recreate the real-time connection.
+  useEffect(() => {
+    let cancelled = false;
+    const endpoint = mode === "group" ? `/chat/group/${channel}` : peer?._id ? `/chat/dm/${peer._id}` : null;
+    setChatSearch("");
+    if (!endpoint) { setMessages([]); setLoading(false); return; }
+    setLoading(true); setError(""); setMessages([]);
+    api.get(endpoint)
+      .then(r => { if (!cancelled) setMessages(r.data.messages || []); })
+      .catch(err => { if (!cancelled) setError(err.response?.data?.message || "Unable to load messages."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [mode, channel, peer?._id]);
+
+  // One Socket.IO connection per signed-in user instead of reconnecting on
+  // every chat selection (fixes common premature WebSocket close warnings).
   useEffect(() => {
     let mounted = true;
     const token = getToken();
-    if (!token) {
-      setError("Session expired. Please login again.");
-      setLoading(false);
-      return;
-    }
-
-    async function load() {
-      try {
-        setLoading(true);
-        setError("");
-        const endpoint = mode === "group"
-          ? `/chat/group/${channel}`
-          : peer ? `/chat/dm/${peer._id}` : null;
-        if (!endpoint) {
-          setMessages([]);
-          setLoading(false);
-          return;
-        }
-        const r = await api.get(endpoint);
-        if (mounted) setMessages(r.data.messages || []);
-      } catch (err) {
-        if (mounted) setError(err.response?.data?.message || "Unable to load messages.");
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    }
-
-    load();
-
+    if (!token) { setError("Session expired. Please log in again."); setConnected(false); return; }
     const socket = io(SOCKET_URL, {
-      auth: { token },
-      // Polling-first prevents premature WebSocket-close warnings during
-      // React StrictMode mounts and rapid room navigation.
-      transports: ["polling"],
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 800,
+      auth: { token }, transports: ["polling"], reconnection: true,
+      reconnectionAttempts: 10, reconnectionDelay: 800,
     });
-
     socketRef.current = socket;
-
     socket.on("connect", () => {
       if (!mounted) return;
-      setConnected(true);
-      setError("");
-      socket.emit("join-room", { type: mode, channel, peerId: peer?._id });
+      setConnected(true); setError("");
+      socket.emit("join-room", activeRoomRef.current);
     });
-
-    socket.on("message:new", (message) => {
+    socket.on("message:new", message => {
       if (!mounted || !message) return;
-      const matches = mode === "group"
-        ? message.type === "group" && message.channel === channel
-        : message.type === "direct" &&
-          ((String(message.sender?._id || message.sender) === String(peer?._id)) ||
-           (String(message.recipient?._id || message.recipient) === String(user.id)));
-
-      if (!matches) return;
-
-      setMessages((current) =>
-        current.some((m) => m._id === message._id) ? current : [...current, message]
-      );
+      const room = activeRoomRef.current;
+      const matches = room.type === "group"
+        ? message.type === "group" && message.channel === room.channel
+        : message.type === "direct" && room.peerId &&
+          [String(message.sender?._id || message.sender), String(message.recipient?._id || message.recipient)].includes(String(room.peerId)) &&
+          [String(message.sender?._id || message.sender), String(message.recipient?._id || message.recipient)].includes(String(user.id));
+      if (matches) setMessages(current => current.some(m => String(m._id) === String(message._id)) ? current : [...current, message]);
     });
-
-    socket.on("connect_error", (err) => {
-      if (mounted) {
-        setConnected(false);
-        setError(err.message === "Unauthorized" ? "Session expired. Please login again." : err.message);
-      }
+    socket.on("connect_error", err => {
+      if (!mounted) return;
+      setConnected(false);
+      setError(err.message === "Unauthorized" ? "Session expired. Please log in again." : "Real-time chat unavailable. Check the backend connection.");
     });
-
-    socket.on("disconnect", () => mounted && setConnected(false));
-
+    socket.on("disconnect", () => { if (mounted) setConnected(false); });
     return () => {
       mounted = false;
-      if (socket.connected) socket.emit("leave-room", { type: mode, channel, peerId: peer?._id });
-      socket.removeAllListeners();
-      socket.disconnect();
-      socketRef.current = null;
+      socket.removeAllListeners(); socket.disconnect();
+      if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [mode, channel, peer?._id, user.id]);
+  }, [user.id]);
+
+  useEffect(() => {
+    const next = { type: mode, channel, peerId: peer?._id || null };
+    const previous = activeRoomRef.current;
+    activeRoomRef.current = next;
+    const socket = socketRef.current;
+    if (!socket?.connected) return;
+    socket.emit("leave-room", previous);
+    if (mode === "group" || next.peerId) socket.emit("join-room", next);
+    return () => { /* Connection remains active while changing conversations. */ };
+  }, [mode, channel, peer?._id]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -211,8 +193,10 @@ export default function Chat({ user }) {
       {threadInsight&&<section className="context-ai-result" aria-live="polite"><div className="context-ai-head"><strong>AI conversation insight</strong><button onClick={()=>setThreadInsight('')} aria-label="Close thread insight">×</button></div><div className="upgrade-result">{threadInsight}</div><div className="chat-insight-actions">{insightKind === "reply" && <button onClick={()=>{setText(threadInsight);setThreadInsight("")}}>Use as draft</button>}<button onClick={()=>navigator.clipboard?.writeText(threadInsight).catch(()=>setError("Cannot copy insight"))}>Copy text</button></div></section>}
       <div className="chat-layout">
         <aside className="channel-list">
+          <div className="chat-conversation-title"><h2>Messages</h2><span>{members.length} teammates</span></div>
+          <label className="chat-conversation-search"><Search size={16}/><input value={conversationSearch} onChange={e => setConversationSearch(e.target.value)} placeholder="Search people & channels" aria-label="Search conversations" /></label>
           <div className="chat-sidebar-caption"><span>CHANNELS</span><Hash size={14}/></div>
-          {GROUPS.map((item) => (
+          {GROUPS.filter(item => item.name.toLowerCase().includes(conversationSearch.toLowerCase())).map((item) => (
             <button
               key={item.id}
               className={`channel ${mode === "group" && channel === item.id ? "active" : ""}`}
@@ -223,7 +207,7 @@ export default function Chat({ user }) {
           ))}
 
           <div className="chat-sidebar-caption"><span>DIRECT MESSAGES</span><UsersRound size={14}/></div>
-          {members.filter((m) => m._id !== user.id).map((member) => (
+          {members.filter((m) => m._id !== user.id && m.name?.toLowerCase().includes(conversationSearch.toLowerCase())).map((member) => (
             <button
               key={member._id}
               className={`channel ${mode === "direct" && peer?._id === member._id ? "active" : ""}`}
@@ -234,14 +218,15 @@ export default function Chat({ user }) {
             </button>
           ))}
 
-          {!members.length && <div className="empty mini">No other team members yet.</div>}
+          {!members.filter(m => m._id !== user.id).length && <div className="empty mini">No other team members yet.</div>}
         </aside>
 
         <section className="chat-box">
           <div className="chat-head">
-            <div>
-              <b>{mode === "group" ? <Hash size={17} /> : <UserRound size={17} />} {activeTitle}</b>
-              <small>{mode === "group" ? GROUPS.find((g) => g.id === channel)?.description : peer?.email}</small>
+            <div className="chat-active-person">
+              <span className="chat-active-avatar">{mode === "group" ? <Hash size={20}/> : (peer?.avatar ? <img src={peer.avatar} alt=""/> : peer?.name?.[0]?.toUpperCase())}</span>
+              <span><b>{mode === "group" ? channel.charAt(0).toUpperCase() + channel.slice(1) : peer?.name || "Direct message"}</b>
+              <small>{mode === "group" ? GROUPS.find(g => g.id === channel)?.description : peer?.email || "Select a team member"}</small></span>
             </div>
             <div className="chat-head-controls"><button className={showSearch ? "active" : ""} type="button" title="Search this conversation" aria-label="Search conversation" onClick={()=>{setShowSearch(v=>!v);setChatSearch("")}}><Search size={17}/></button><span className="chat-type">{mode === "group" ? <><UsersRound size={13} /> Group</> : <><UserRound size={13} /> Private</>}</span></div>
           </div>
@@ -316,11 +301,11 @@ function MessageBubble({ message, own }) {
       <div className="avatar">{sender.avatar ? <img src={sender.avatar} alt="" /> : name[0]?.toUpperCase()}</div>
       <div className="message-content">
         <div className="message-meta">
-          <b>{name}</b>
+          <b>{own ? "You" : name}</b>
           {sender.role && <span>{sender.role.replace("_", " ")}</span>}
-          <time>{message.createdAt ? new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</time>
         </div>
-        <p>{renderMentions(message.text)}</p>
+        <p>{renderMentions(message.text || message.content || "")}</p>
+        <time className="chat-bubble-time">{message.createdAt ? new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</time>
       </div>
     </div>
   );

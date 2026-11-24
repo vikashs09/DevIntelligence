@@ -133,7 +133,7 @@ export default function App() {
   if (page === "reports") content = <Reports {...props} />;
   if (page === "graph") content = <GraphExplorer {...props} onNavigate={setPage} />;
   if (page === "file-health") content = <FileHealth {...props} />;
-  if (page === "projects") content = <Projects {...props} />;
+  if (page === "projects") content = <Projects {...props} onNavigate={setPage} />;
   if (page === "tasks") content = <Tasks {...props} />;
   if (page === "team") content = <Team {...props} />;
   if (page === "chat") content = <Chat {...props} />;
